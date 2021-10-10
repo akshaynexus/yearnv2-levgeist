@@ -14,7 +14,7 @@ def includeSmallInaccurancy(amount):
 
 
 @pytest.mark.parametrize(config.fixtures, config.params, indirect=True)
-def test_increasing_debt_limit(gov, whale, currency, vault, strategy, allocChangeConf):
+def test_increasing_debt_limit(gov, whale, currency, vault, strategy):
     currency.approve(vault, 2 ** 256 - 1, {"from": gov})
     # Fund gov with enough tokens
     currency.approve(whale, deposit_amount + second_deposit_amount, {"from": whale})
@@ -50,7 +50,7 @@ def test_increasing_debt_limit(gov, whale, currency, vault, strategy, allocChang
 
 
 @pytest.mark.parametrize(config.fixtures, config.params, indirect=True)
-def test_decrease_debt_limit(gov, whale, currency, vault, strategy, allocChangeConf):
+def test_decrease_debt_limit(gov, whale, currency, vault, strategy):
     currency.approve(vault, 2 ** 256 - 1, {"from": gov})
     # Fund gov with enough tokens
     currency.approve(whale, deposit_amount + second_deposit_amount, {"from": whale})

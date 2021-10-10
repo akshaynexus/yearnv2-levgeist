@@ -5,7 +5,7 @@ import conftest as config
 
 
 @pytest.mark.parametrize(config.fixtures, config.params, indirect=True)
-def test_shutdown(gov, whale, currency, vault, strategy, allocChangeConf):
+def test_shutdown(gov, whale, currency, vault, strategy):
     currency.approve(vault, 2 ** 256 - 1, {"from": gov})
 
     currency.approve(whale, 2 ** 256 - 1, {"from": whale})

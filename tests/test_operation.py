@@ -9,7 +9,7 @@ import conftest as config
 
 @pytest.mark.parametrize(config.fixtures, config.params, indirect=True)
 @pytest.mark.require_network("ftm-main-fork")
-def test_operation(currency, strategy, vault, whale, gov, bob, alice, allocChangeConf):
+def test_operation(currency, strategy, vault, whale, gov, bob, alice):
     # Amount configs
     test_budget = 888000 * 1e18
     approve_amount = 1000000 * 1e18
@@ -36,7 +36,6 @@ def test_operation(currency, strategy, vault, whale, gov, bob, alice, allocChang
     vault.setLockedProfitDegradation(Wei("1 ether"))
     # Sleep and harvest 5 times,approx for 24 hours
     sleepAndHarvest(5, strategy, gov)
-    strategy.changeAllocs(allocChangeConf, {"from": gov})
     strategy.rebalance(strategy.balanceOfStake() / 2)
     sleepAndHarvest(5, strategy, gov)
     chain.sleep(6*60*60)
