@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from brownie import Strategy, interface, accounts, config, network, project, web3, AaveUtils
+from brownie import (
+    Strategy,
+    interface,
+    accounts,
+    config,
+    network,
+    project,
+    web3,
+    AaveUtils,
+)
 from brownie.network.gas.strategies import GasNowStrategy
 from brownie.network import gas_price
 from eth_utils import is_checksum_address
@@ -23,6 +32,7 @@ STRATEGIST_MULTISIG = "0x16388463d60FFE0661Cf7F1f31a7D658aC790ff7"
 # Set this to true if we are using a experimental deploy flow
 EXPERIMENTAL_DEPLOY = False
 BASE_GASLIMIT = 400000
+
 
 def get_address(msg: str) -> str:
     while True:
@@ -84,7 +94,7 @@ def main():
     if input("Deploy Strategy? [y]/n: ").lower() == "n":
         strategy = Strategy.at(get_address("Deployed Strategy: "))
     else:
-        aaveUtils = AaveUtils.deploy({'from':dev},publish_source=True)
+        aaveUtils = AaveUtils.deploy({"from": dev}, publish_source=True)
         strategy = Strategy.deploy(vault, {"from": dev}, publish_source=True)
     # add strat to vault
     vault.addStrategy(strategy, 9800, 0, 2 ** 256 - 1, 1000, {"from": dev})
