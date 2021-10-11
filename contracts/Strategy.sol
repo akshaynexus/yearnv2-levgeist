@@ -79,10 +79,10 @@ contract Strategy is BaseStrategy {
         //Get max ltv,set leverage ltv params
         uint256 maxLTV = AaveUtils._getLTVAaveV2(pool, address(want));
         //target ltv to 81.25% of available ltv
-        targetLTVMultiplier = maxLTV.sub((maxLTV).mul(8125).div(MAX_BPS));
+        targetLTVMultiplier = maxLTV.mul(8125).div(MAX_BPS);
         //Warning ltv multiplier to 15% premium to target ltv
-        warningLTVMultiplier = maxLTV.add((maxLTV).mul(1500).div(MAX_BPS));
-        leverageExcess = true;
+        warningLTVMultiplier = targetLTVMultiplier.add((targetLTVMultiplier).mul(1500).div(MAX_BPS));
+        leverageExcess = false;
 
         DataTypes.ReserveData memory reserveData = pool.getReserveData(address(want));
 
