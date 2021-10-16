@@ -14,7 +14,6 @@ import "../interfaces/IUniswapV2Router02.sol";
 import "../interfaces/IMultiFeeDistribution.sol";
 import "../libraries/AaveUtils.sol";
 import {IGeistIncentivesController} from "../interfaces/IGeistIncentivesController.sol";
-
 interface IVariableDebtTokenX is IVariableDebtToken, IERC20 {}
 
 contract Strategy is BaseStrategy {
@@ -24,6 +23,8 @@ contract Strategy is BaseStrategy {
     using SafeMath for uint8;
 
     uint256 private constant MAX_BPS = 10000;
+    uint256 public minHealth;
+    uint256 public minRebalanceAmount;
 
     uint256 public LEVERAGE;
 
@@ -59,6 +60,8 @@ contract Strategy is BaseStrategy {
     bool leverageExcess;
 
     event Cloned(address indexed clone);
+    event Deleverage(bool full, uint256 amount);
+    event DirectWithdraw(uint256 amount);
 
     constructor(address _vault) public BaseStrategy(_vault) {
         _initializeStrat();
@@ -69,7 +72,7 @@ contract Strategy is BaseStrategy {
         maxReportDelay = 6300;
         profitFactor = 1500;
         debtThreshold = 1_000_000 * 1e18;
-        LEVERAGE = 10;
+        LEVERAGE = 5;
         //Set  specific params
         pool = ILendingPool(0x9FAD24f572045c7869117160A571B2e50b10d068);
         provider = ILendingPoolAddressesProvider(pool.getAddressesProvider());
@@ -80,10 +83,11 @@ contract Strategy is BaseStrategy {
         uint256 maxLTV = AaveUtils._getLTVAaveV2(pool, address(want));
         //target ltv to 81.25% of available ltv
         targetLTVMultiplier = maxLTV.mul(8125).div(MAX_BPS);
-        //Warning ltv multiplier to 15% premium to target ltv
-        warningLTVMultiplier = targetLTVMultiplier.add((targetLTVMultiplier).mul(1500).div(MAX_BPS));
+        //Warning ltv multiplier to max ltv
+        warningLTVMultiplier = maxLTV;
         leverageExcess = false;
-
+        minHealth = 1.08 ether;// 1.08 with 18 decimals this is slighly above 70% tvl
+        minRebalanceAmount = 1 * 10**IERC20Extended(address(want)).decimals();
         DataTypes.ReserveData memory reserveData = pool.getReserveData(address(want));
 
         aToken = IAToken(reserveData.aTokenAddress);
@@ -162,6 +166,72 @@ contract Strategy is BaseStrategy {
         return USDToWant(getAvailableDebtLimitInUSD()).mul(8261).div(MAX_BPS);
     }
 
+    function getExcessLTV() public view returns (uint256) {
+        (, , , , , uint256 health) = pool.getUserAccountData(address(this));
+        //Return minus safety margin
+        return (MAX_BPS + ((health - 1e18) / 1e15)) - 100;
+    }
+
+    function getMaxBorrowable() public view returns (uint256) {
+        (
+            ,
+            ,
+            ,
+            ,
+            /*uint256 totalCollateralETH*/
+            /*uint256 totalDebtETH*/
+            /*uint256 availableBorrowsETH*/
+            /*uint256 currentLiquidationThreshold*/
+            uint256 ltv,
+            uint256 healthFactor
+        ) = pool.getUserAccountData(address(this));
+
+        if (healthFactor > minHealth) {
+            // Amount = deposited * ltv - borrowed
+            // Div MAX_BPS because because ltv / maxbps is the percent
+            uint256 maxValue = balanceOfLend().mul(ltv).div(MAX_BPS).sub(balanceOfDebt());
+            //Reduce by 0.5%
+            maxValue = maxValue.mul(9950).div(MAX_BPS);
+            // Don't borrow if it's dust, save gas
+            if (maxValue < minRebalanceAmount) {
+                return 0;
+            }
+
+            return maxValue;
+        }
+
+        return 0;
+    }
+
+    function getMaxWithdrawable() public view returns (uint256) {
+        // returns 95% of the collateral we can withdraw from aave, used to loop and repay debts
+        (
+            ,
+            ,
+            ,
+            /*uint256 totalCollateralETH*/
+            /*uint256 totalDebtETH*/
+            /*uint256 availableBorrowsETH*/
+            uint256 currentLiquidationThreshold,
+            ,
+
+        ) =
+            /*uint256 ltv*/
+            /*uint256 healthFactor*/
+            pool.getUserAccountData(address(this));
+
+        uint256 aBalance = balanceOfLend();
+        uint256 vBalance = balanceOfDebt();
+
+        if (vBalance == 0) {
+            return type(uint256).max; //You have repaid all
+        }
+
+        uint256 diff = aBalance.sub(vBalance.mul(10000).div(currentLiquidationThreshold));
+        uint256 inWant = diff; // Take 97% just to be safe
+        return inWant;
+    }
+
     //Returns staked value
     function balanceOfLend() public view returns (uint256 total) {
         return aToken.balanceOf(address(this));
@@ -172,13 +242,20 @@ contract Strategy is BaseStrategy {
     }
 
     function getTokensForRewards() internal view returns (address[] memory _tokens) {
-        address[] memory _tokens = new address[](2);
+        _tokens = new address[](2);
         _tokens[0] = address(aToken);
         _tokens[1] = address(dToken);
     }
 
+    function _sum(uint256[] memory array) internal view returns (uint256 total) {
+        for (uint256 i = 0; i < array.length; i++) {
+            total += array[i];
+        }
+    }
+
     function pendingGeistRewards() public view returns (uint256) {
-        return _incentivesController().claimableReward(address(this), getTokensForRewards()).mul(5000).div(MAX_BPS);
+        uint256[] memory rewards = _incentivesController().claimableReward(address(this), getTokensForRewards());
+        return _sum(rewards).mul(5000).div(MAX_BPS);
     }
 
     //To track current loss from lev lending
@@ -191,6 +268,29 @@ contract Strategy is BaseStrategy {
             //This will add to loss
             return debt.sub(totalAssets);
         }
+    }
+
+    function pendingLendingLoss() public view returns (uint256) {
+        uint256 debt = vault.strategies(address(this)).totalDebt;
+        uint256 lendBal = estimatedTotalAssets();
+        if (debt > lendBal) {
+            //This will add to loss
+            return debt.sub(lendBal);
+        }
+    }
+
+    function pendingLendingProfit() public view returns (uint256) {
+        uint256 debt = vault.strategies(address(this)).totalDebt;
+        uint256 lendBal = estimatedTotalAssets();
+        uint256 totalAssets = lendBal;
+        if (debt < totalAssets) {
+            //This will add to profit
+            return totalAssets.sub(debt);
+        }
+    }
+
+    function getPNL() public view returns (uint256 profit, uint256 loss) {
+        (profit, loss) = (pendingLendingProfit(), pendingLendingLoss());
     }
 
     function pendingProfit() public view returns (uint256) {
@@ -283,54 +383,83 @@ contract Strategy is BaseStrategy {
     }
 
     function _deposit(uint256 _depositAmount) internal {
+        _depositToLending(_depositAmount);
         if (isLeveraged()) {
-            _leverage(_depositAmount);
-        } else {
-            pool.deposit(address(want), _depositAmount, address(this), 0);
+            _leverage();
         }
     }
 
-    function _leverage(uint256 _levAmount) internal {
+    function _depositToLending(uint256 _depositAmount) internal {
+        pool.deposit(address(want), _depositAmount, address(this), 0);
+    }
+
+    function _withdrawFromLending(uint256 _redeemAmount) internal {
+        if (_redeemAmount > 0) pool.withdraw(address(want), _redeemAmount, address(this));
+    }
+
+    function _repay(uint256 _repayAmount) internal {
+        if (_repayAmount > 0) pool.repay(address(want), _repayAmount, 2, address(this));
+    }
+
+    function _leverage() internal {
         for (uint256 i = 0; i < LEVERAGE; i++) {
-            pool.deposit(address(want), _depositAmount, address(this), 0);
-            _depositAmount = _depositAmount.mul(targetLTVMultiplier).div(MAX_BPS);
-            if (_depositAmount > 0) pool.borrow(address(want), _depositAmount, 2, 0, address(this));
+            uint256 toBorrow = getMaxBorrowable();
+            if (toBorrow > 0) {
+                pool.borrow(address(want), toBorrow, 2, 0, address(this));
+                pool.deposit(address(want), toBorrow, address(this), 0);
+                toBorrow = getMaxBorrowable();
+            } else {
+                break;
+            }
         }
-    }
-
-    function _withdrawAll() internal {
-        _withdraw(getPositionValue());
     }
 
     // Base logic Taken from reaper, beefy.Modified to leverage excess if leverageexcess is enabled
-    function _deleverageUpto(uint256 _reqAmount) internal {
+    function _deleverageUpto(uint256 _reqAmount, bool fullDelev) internal {
+        require(_reqAmount > 0, "ReqAmount < 0");
         uint256 borrowBal = balanceOfDebt();
         uint256 wantBal = balanceOfWant();
+        uint256 maxWithdrawable = getPositionValue();
+        uint256 withdrawable = getMaxWithdrawable();
+        _reqAmount = Math.min(maxWithdrawable, _reqAmount);
+        if (withdrawable != type(uint256).max && withdrawable > 0) {
+            if (fullDelev) {
+                while (withdrawable != type(uint256).max && withdrawable > 0) {
+                    _withdrawAndRepay(withdrawable);
+                    emit Deleverage(fullDelev, _reqAmount);
+                    withdrawable = getMaxWithdrawable();
+                }
+                uint256 lendBal = balanceOfLend();
+                _withdrawFromLending(lendBal);
+            } else {
+                while (wantBal < _reqAmount && withdrawable > 0) {
+                    //Withdraw and repay withdrawable amount
+                    _withdrawAndRepay(Math.max(withdrawable, wantBal));
+                    //withdraw from lending for max withdrawable
+                    _withdrawFromLending(getMaxWithdrawable());
+                    wantBal = balanceOfWant();
+                    withdrawable = getMaxWithdrawable();
+                }
+            }
 
-        while (wantBal < borrowBal) {
-            _repayDebt(wantBal);
-
-            borrowBal = balanceOfDebt();
-            uint256 targetSupply = borrowBal.mul(warningLTVMultiplier.sub(100)).div(MAX_BPS);
-
-            uint256 supplyBal = balanceOfLend();
-            _redeem(supplyBal.sub(targetSupply));
-
-            wantBal = balanceOfWant();
-        }
-        _repayDebt(balanceOfDebt());
-        uint256 availLend = balanceOfLend();
-        _redeem(availLend);
-        if (leverageExcess && availLend > _reqAmount) {
-            _leverage(availLend.sub(_reqAmount));
+            // if (leverageExcess && availLend > _reqAmount) {
+            //     _leverage(availLend.sub(_reqAmount));
+            // }
+        } else {
+            emit DirectWithdraw(_reqAmount);
+            _withdrawFromLending(_reqAmount);
         }
     }
 
     function _withdraw(uint256 _withdrawAmount) internal {
         if (isLeveraged()) {
-            _deleverageUpto(_withdrawAmount);
+            if (getMaxWithdrawable() < _withdrawAmount) {
+                _deleverageUpto(_withdrawAmount, _withdrawAmount >= getPositionValue());
+            } else {
+                _withdrawFromLending(_withdrawAmount);
+            }
         } else {
-            pool.withdraw(address(want), _withdrawAmount, address(this));
+            _withdrawFromLending(_withdrawAmount);
         }
     }
 
@@ -338,17 +467,9 @@ contract Strategy is BaseStrategy {
         _withdrawAndRepay(_rAmount);
     }
 
-    function _redeem(uint256 _redeemAmount) internal {
-        pool.withdraw(address(want), _redeemAmount, address(this));
-    }
-
-    function _repayDebt(uint256 _repayAmount) internal {
-        pool.repay(address(want), _repayAmount, 2, address(this));
-    }
-
     function _withdrawAndRepay(uint256 _repayAmount) internal {
-        _redeem(_repayAmount);
-        _repayDebt(_repayAmount);
+        _withdrawFromLending(_repayAmount);
+        _repay(_repayAmount);
     }
 
     function updateMinProfit(uint256 _minProfit) external onlyStrategist {
@@ -375,7 +496,7 @@ contract Strategy is BaseStrategy {
         }
     }
 
-    function claimAndSwapRewards() internal {
+    function _claimAndSwapRewards() internal {
         //Claim incentives from controller
         _incentivesController().claim(address(this), getTokensForRewards());
         //Early exit and swap
@@ -384,8 +505,8 @@ contract Strategy is BaseStrategy {
     }
 
     function rebalance(uint256 amountToRebalance) public onlyAuthorized {
-        claimAndSwapRewards();
-        _withdrawAll();
+        _claimAndSwapRewards();
+        liquidatePosition(amountToRebalance);
         _deposit(balanceOfWant());
     }
 
@@ -409,10 +530,13 @@ contract Strategy is BaseStrategy {
         }
     }
 
-    function handleProfit() internal returns (uint256 _profit) {
+    function handleProfit(uint256 _profit, uint256 _loss) internal returns (uint256, uint256) {
         uint256 balanceOfWantBefore = balanceOfWant();
-        claimAndSwapRewards();
-        _profit = pendingProfit();
+        _claimAndSwapRewards();
+        (uint256 p, uint256 l) = getPNL();
+        _profit = _profit.add(p);
+        _loss = _loss.add(l);
+        return (_profit, _loss);
     }
 
     function prepareReturn(uint256 _debtOutstanding)
@@ -425,7 +549,7 @@ contract Strategy is BaseStrategy {
         )
     {
         (_debtPayment, _loss) = returnDebtOutstanding(_debtOutstanding);
-        _profit = handleProfit();
+        (_profit, _loss) = handleProfit(_profit, _loss);
         uint256 balanceAfter = balanceOfWant();
         uint256 requiredWantBal = _profit + _debtPayment;
         if (balanceAfter < requiredWantBal) {
@@ -452,7 +576,7 @@ contract Strategy is BaseStrategy {
         // NOTE: Maintain invariant `want.balanceOf(this) >= _liquidatedAmount`
         // NOTE: Maintain invariant `_liquidatedAmount + _loss <= _amountNeeded`
         uint256 balanceWant = balanceOfWant();
-        uint256 balanceStaked = balanceOfLend();
+        uint256 balanceStaked = getPositionValue();
         if (_amountNeeded > balanceWant) {
             uint256 amountToWithdraw = (Math.min(balanceStaked, _amountNeeded - balanceWant));
             _withdraw(amountToWithdraw);
@@ -479,17 +603,18 @@ contract Strategy is BaseStrategy {
         address _out,
         uint256 _amtIn
     ) internal view returns (uint256) {
+        if (_amtIn <= 0) return _amtIn;
         address[] memory path = getTokenOutPath(_in, _out);
         return router.getAmountsOut(_amtIn, path)[path.length - 1];
     }
 
     function prepareMigration(address _newStrategy) internal override {
-        _withdrawAll();
+        _claimAndSwapRewards();
+        liquidatePosition(type(uint256).max);
     }
 
     function liquidateAllPositions() internal virtual override returns (uint256 _amountFreed) {
-        _withdrawAll();
-        _amountFreed = balanceOfWant();
+        (_amountFreed, ) = liquidatePosition(type(uint256).max);
     }
 
     function _fromETH(uint256 _amount, address asset) internal view returns (uint256) {

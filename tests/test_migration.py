@@ -10,9 +10,7 @@ def includeSmallInaccurancy(amount):
 
 @pytest.mark.parametrize(config.fixtures, config.params, indirect=True)
 @pytest.mark.require_network("ftm-main-fork")
-def test_migrate(
-    currency, Strategy, strategy, chain, vault, whale, gov, strategist
-):
+def test_migrate(currency, Strategy, strategy, chain, vault, whale, gov, strategist):
     debt_ratio = 10_000
     vault.addStrategy(strategy, debt_ratio, 0, 2 ** 256 - 1, 1_000, {"from": gov})
 

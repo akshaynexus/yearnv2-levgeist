@@ -22,7 +22,7 @@ def test_operation(currency, strategy, vault, whale, gov, bob, alice):
     vault.setDepositLimit(deposit_limit)
 
     # 100% of the vault's depositLimit
-    vault.addStrategy(strategy, 10_000, 0, 2 ** 256 - 1, 0, {"from": gov})
+    vault.addStrategy(strategy, 10_000, 0, 2 ** 256 - 1, 1000, {"from": gov})
 
     currency.approve(gov, approve_amount, {"from": gov})
     currency.transferFrom(gov, bob, bob_deposit, {"from": gov})
@@ -33,12 +33,12 @@ def test_operation(currency, strategy, vault, whale, gov, bob, alice):
     vault.deposit(bob_deposit, {"from": bob})
     vault.deposit(alice_deposit, {"from": alice})
     # Set locked profit degradation to small amount so pps increases during test
-    vault.setLockedProfitDegradation(Wei("1 ether"))
+    vault.setLockedProfitDegradation(Wei("0.1 ether"))
     # Sleep and harvest 5 times,approx for 24 hours
     sleepAndHarvest(5, strategy, gov)
-    strategy.rebalance(strategy.balanceOfStake() / 2)
+    strategy.rebalance(strategy.getPositionValue() / 2)
     sleepAndHarvest(5, strategy, gov)
-    chain.sleep(6*60*60)
+    chain.sleep(6 * 60 * 60)
     chain.mine(1)
     # We should have made profit or stayed stagnant (This happens when there is no rewards in 1INCH rewards)
     assert vault.pricePerShare() / 1e18 >= 1
@@ -52,13 +52,14 @@ def test_operation(currency, strategy, vault, whale, gov, bob, alice):
     # assert strategy.estimatedTotalAssets() >= vault.totalAssets() + currency.balanceOf(vault)
     # Set debt ratio to lower than 100%
     vault.updateStrategyDebtRatio(strategy, 9_800, {"from": gov})
-    chain.sleep(12 * 60 * 60)
-    chain.mine(1)
+    sleepAndHarvest(2, strategy, gov)
+
     # Withdraws should not fail
     vault.withdraw(alice_deposit, {"from": alice})
     # Try harvesting again,this should work
-    strategy.harvest({"from": gov})
-    # check asset balances again after pendinginterestprofit is added on harvest
+    sleepAndHarvest(2, strategy, gov)
+
+    # check asset balances again after pendingProfitprofit is added on harvest
     # assert strategy.estimatedTotalAssets() >= vault.totalAssets()
 
     vault.withdraw(bob_deposit, {"from": bob})
@@ -79,11 +80,16 @@ def test_operation(currency, strategy, vault, whale, gov, bob, alice):
     assert vault.pricePerShare() / 1e18 >= 1
 
 
+def mineBlocks(blocks):
+    for i in range(blocks):
+        chain.mine(1)
+        chain.sleep(10)
+
+
 def sleepAndHarvest(times, strat, gov):
     for i in range(times):
         debugStratData(strat, "Before harvest" + str(i))
-        chain.sleep(17280)
-        chain.mine(1)
+        mineBlocks(10)
         strat.harvest({"from": gov})
         debugStratData(strat, "After harvest" + str(i))
 
@@ -91,10 +97,7 @@ def sleepAndHarvest(times, strat, gov):
 # Used to debug strategy balance data
 def debugStratData(strategy, msg):
     print(msg)
-    print("Total assets " + str(strategy.estimatedTotalAssets()))
-    print(
-        str(strategy.bTokenToWant("0x5dd76071F7b5F4599d4F2B7c08641843B746ace9", 1e18))
-    )
-    print("ftm Balance " + str(strategy.balanceOfWant()))
-    print("Stake balance " + str(strategy.balanceOfStake()))
-    print("Pending reward " + str(strategy.pendingInterest()))
+    print("Total assets " + str(strategy.estimatedTotalAssets() / 1e18))
+    print("ftm Balance " + str(strategy.balanceOfWant() / 1e18))
+    print("Stake balance " + str(strategy.getPositionValue() / 1e18))
+    print("Pending reward " + str(strategy.pendingProfit() / 1e18))

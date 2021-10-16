@@ -6,7 +6,7 @@ params = [
     pytest.param(
         "0x21be370d5312f44cb42ce377bc9b8a0cef1a4c83",
         "0x5AA53f03197E08C4851CAD8C92c7922DA5857E5d",
-        id="FTM LP TarrotLender",
+        id="FTM Geist",
     ),
 ]
 
@@ -66,7 +66,6 @@ def currency(request, interface):
 def whale(request, accounts):
     acc = accounts.at(request.param, force=True)
     yield acc
-
 
 
 @pytest.fixture
