@@ -14,6 +14,7 @@ import "../interfaces/IUniswapV2Router02.sol";
 import "../interfaces/IMultiFeeDistribution.sol";
 import "../libraries/AaveUtils.sol";
 import {IGeistIncentivesController} from "../interfaces/IGeistIncentivesController.sol";
+
 interface IVariableDebtTokenX is IVariableDebtToken, IERC20 {}
 
 contract Strategy is BaseStrategy {
@@ -86,7 +87,7 @@ contract Strategy is BaseStrategy {
         //Warning ltv multiplier to max ltv
         warningLTVMultiplier = maxLTV;
         leverageExcess = false;
-        minHealth = 1.08 ether;// 1.08 with 18 decimals this is slighly above 70% tvl
+        minHealth = 1.08 ether; // 1.08 with 18 decimals this is slighly above 70% tvl
         minRebalanceAmount = 1 * 10**IERC20Extended(address(want)).decimals();
         DataTypes.ReserveData memory reserveData = pool.getReserveData(address(want));
 
@@ -434,9 +435,10 @@ contract Strategy is BaseStrategy {
             } else {
                 while (wantBal < _reqAmount && withdrawable > 0) {
                     //Withdraw and repay withdrawable amount
-                    _withdrawAndRepay(Math.max(withdrawable, wantBal));
+                    _withdrawAndRepay(withdrawable);
                     //withdraw from lending for max withdrawable
                     _withdrawFromLending(getMaxWithdrawable());
+                    //Update temporary vars
                     wantBal = balanceOfWant();
                     withdrawable = getMaxWithdrawable();
                 }
