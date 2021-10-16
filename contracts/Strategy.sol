@@ -29,13 +29,6 @@ contract Strategy is BaseStrategy {
 
     uint256 public LEVERAGE;
 
-    // NOTE: LTV = Loan-To-Value = debt/collateral
-    // Target LTV: ratio up to which which we will borrow
-    uint256 public targetLTVMultiplier;
-
-    // Warning LTV: ratio at which we will repay
-    uint256 public warningLTVMultiplier;
-
     bool public constant isIncentivised = true;
 
     uint256 public minProfit;
@@ -58,8 +51,6 @@ contract Strategy is BaseStrategy {
     IAToken public aToken;
     IVariableDebtTokenX public dToken;
 
-    bool leverageExcess;
-
     event Cloned(address indexed clone);
     event Deleverage(bool full, uint256 amount);
     event DirectWithdraw(uint256 amount);
@@ -80,13 +71,6 @@ contract Strategy is BaseStrategy {
         oracle = IPriceOracle(provider.getPriceOracle());
         protocolDataProvider = IProtocolDataProvider(0xf3B0611e2E4D2cd6aB4bb3e01aDe211c3f42A8C3);
 
-        //Get max ltv,set leverage ltv params
-        uint256 maxLTV = AaveUtils._getLTVAaveV2(pool, address(want));
-        //target ltv to 81.25% of available ltv
-        targetLTVMultiplier = maxLTV.mul(8125).div(MAX_BPS);
-        //Warning ltv multiplier to max ltv
-        warningLTVMultiplier = maxLTV;
-        leverageExcess = false;
         minHealth = 1.08 ether; // 1.08 with 18 decimals this is slighly above 70% tvl
         minRebalanceAmount = 1 * 10**IERC20Extended(address(want)).decimals();
         DataTypes.ReserveData memory reserveData = pool.getReserveData(address(want));
@@ -151,26 +135,6 @@ contract Strategy is BaseStrategy {
     function balanceOfDebt() public view returns (uint256) {
         //Return total debt of want in
         return dToken.balanceOf(address(this));
-    }
-
-    function getAvailableDebtLimitInUSD() public view returns (uint256) {
-        (, , uint256 availableDebtLimit, , , ) = pool.getUserAccountData(address(this));
-        return availableDebtLimit;
-    }
-
-    function USDToWant(uint256 usdAmount) public view returns (uint256) {
-        uint256 price = oracle.getAssetPrice(address(want));
-        return usdAmount.mul(1e18).div(price);
-    }
-
-    function getAvailableDebtLimitInWant() public view returns (uint256) {
-        return USDToWant(getAvailableDebtLimitInUSD()).mul(8261).div(MAX_BPS);
-    }
-
-    function getExcessLTV() public view returns (uint256) {
-        (, , , , , uint256 health) = pool.getUserAccountData(address(this));
-        //Return minus safety margin
-        return (MAX_BPS + ((health - 1e18) / 1e15)) - 100;
     }
 
     function getMaxBorrowable() public view returns (uint256) {
@@ -415,7 +379,7 @@ contract Strategy is BaseStrategy {
         }
     }
 
-    // Base logic Taken from reaper, beefy.Modified to leverage excess if leverageexcess is enabled
+    // Base logic Taken from Tesseract,redone to simplify logic
     function _deleverageUpto(uint256 _reqAmount, bool fullDelev) internal {
         require(_reqAmount > 0, "ReqAmount < 0");
         uint256 borrowBal = balanceOfDebt();
@@ -427,9 +391,9 @@ contract Strategy is BaseStrategy {
             if (fullDelev) {
                 while (withdrawable != type(uint256).max && withdrawable > 0) {
                     _withdrawAndRepay(withdrawable);
-                    emit Deleverage(fullDelev, _reqAmount);
                     withdrawable = getMaxWithdrawable();
                 }
+                emit Deleverage(fullDelev, _reqAmount);
                 uint256 lendBal = balanceOfLend();
                 _withdrawFromLending(lendBal);
             } else {
@@ -443,10 +407,6 @@ contract Strategy is BaseStrategy {
                     withdrawable = getMaxWithdrawable();
                 }
             }
-
-            // if (leverageExcess && availLend > _reqAmount) {
-            //     _leverage(availLend.sub(_reqAmount));
-            // }
         } else {
             emit DirectWithdraw(_reqAmount);
             _withdrawFromLending(_reqAmount);
@@ -480,11 +440,6 @@ contract Strategy is BaseStrategy {
 
     function updateMinCredit(uint256 _minCredit) external onlyStrategist {
         minCredit = _minCredit;
-    }
-
-    function updateLTVS(uint256 _borrowLTV, uint256 _maxLTV) external onlyStrategist {
-        targetLTVMultiplier = _borrowLTV;
-        warningLTVMultiplier = _maxLTV;
     }
 
     function toggleLevExcess() external onlyStrategist {
