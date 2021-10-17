@@ -65,11 +65,13 @@ contract Strategy is BaseStrategy {
         profitFactor = 1500;
         debtThreshold = 1_000_000 * 1e18;
         LEVERAGE = 5;
-        //Set  specific params
-        pool = ILendingPool(0x9FAD24f572045c7869117160A571B2e50b10d068);
-        provider = ILendingPoolAddressesProvider(pool.getAddressesProvider());
-        oracle = IPriceOracle(provider.getPriceOracle());
+        //Derive required data from protocol data provider
         protocolDataProvider = IProtocolDataProvider(0xf3B0611e2E4D2cd6aB4bb3e01aDe211c3f42A8C3);
+        //Set  specific params
+        provider = ILendingPoolAddressesProvider(protocolDataProvider.ADDRESSES_PROVIDER());
+        pool = ILendingPool(provider.getLendingPool());
+
+        oracle = IPriceOracle(provider.getPriceOracle());
 
         minHealth = 1.08 ether; // 1.08 with 18 decimals this is slighly above 70% tvl
         minRebalanceAmount = 1 * 10**IERC20Extended(address(want)).decimals();
