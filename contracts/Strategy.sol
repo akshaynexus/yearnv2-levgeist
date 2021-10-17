@@ -416,12 +416,8 @@ contract Strategy is BaseStrategy {
     }
 
     function _withdraw(uint256 _withdrawAmount) internal {
-        if (isLeveraged()) {
-            if (getMaxWithdrawable() < _withdrawAmount) {
-                _deleverageUpto(_withdrawAmount, _withdrawAmount >= getPositionValue());
-            } else {
-                _withdrawFromLending(_withdrawAmount);
-            }
+        if (isLeveraged() && getMaxWithdrawable() < _withdrawAmount) {
+            _deleverageUpto(_withdrawAmount, _withdrawAmount >= getPositionValue());
         } else {
             _withdrawFromLending(_withdrawAmount);
         }
