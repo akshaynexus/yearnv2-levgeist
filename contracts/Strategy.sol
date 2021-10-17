@@ -442,10 +442,6 @@ contract Strategy is BaseStrategy {
         minCredit = _minCredit;
     }
 
-    function toggleLevExcess() external onlyStrategist {
-        leverageExcess = !leverageExcess;
-    }
-
     function updateLeverage(uint256 _newLev, bool rebalanceAfter) external onlyStrategist {
         LEVERAGE = _newLev;
         if (rebalanceAfter) {
