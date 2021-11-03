@@ -6,16 +6,26 @@ pragma solidity 0.6.12;
 pragma experimental ABIEncoderV2;
 
 // These are the core Yearn libraries
-import {BaseStrategy} from "@yearnvaults/contracts/BaseStrategy.sol";
+import {IERC20, SafeERC20, SafeMath, BaseStrategy, Address} from "@yearnvaults/contracts/BaseStrategy.sol";
 import "@openzeppelin/contracts/math/Math.sol";
 
 // Import interfaces for many popular DeFi projects, or add your own!
+import {DataTypes} from "@aave/contracts/protocol/libraries/types/DataTypes.sol";
+import {IReserveInterestRateStrategy} from "@aave/contracts/interfaces/IReserveInterestRateStrategy.sol";
+import {ILendingPool} from "@aave/contracts/interfaces/ILendingPool.sol";
+import {IPriceOracle} from "@aave/contracts/interfaces/IPriceOracle.sol";
+import {IAToken} from "@aave/contracts/interfaces/IAToken.sol";
+import {IVariableDebtToken} from "@aave/contracts/interfaces/IVariableDebtToken.sol";
+import {ILendingPoolAddressesProvider, IProtocolDataProvider} from "../interfaces/IProtocolDataProvider.sol";
 import "../interfaces/IUniswapV2Router02.sol";
 import "../interfaces/IMultiFeeDistribution.sol";
-import "../libraries/AaveUtils.sol";
 import {IGeistIncentivesController} from "../interfaces/IGeistIncentivesController.sol";
 
 interface IVariableDebtTokenX is IVariableDebtToken, IERC20 {}
+
+interface IERC20Extended is IERC20 {
+    function decimals() external view returns (uint8);
+}
 
 contract Strategy is BaseStrategy {
     using SafeERC20 for IERC20;
@@ -67,6 +77,17 @@ contract Strategy is BaseStrategy {
         LEVERAGE = 5;
         //Derive required data from protocol data provider
         protocolDataProvider = IProtocolDataProvider(0xf3B0611e2E4D2cd6aB4bb3e01aDe211c3f42A8C3);
+        _updateProtocolParams();
+
+        //Spookyswap router
+        router = IUniswapV2Router02(0xF491e7B69E4244ad4002BC14e878a34207E38c29);
+        weth = router.WETH();
+
+        want.approve(address(pool), type(uint256).max);
+        geist.approve(address(router), type(uint256).max);
+    }
+
+    function _updateProtocolParams() internal {
         //Set  specific params
         provider = ILendingPoolAddressesProvider(protocolDataProvider.ADDRESSES_PROVIDER());
         pool = ILendingPool(provider.getLendingPool());
@@ -79,13 +100,10 @@ contract Strategy is BaseStrategy {
 
         aToken = IAToken(reserveData.aTokenAddress);
         dToken = IVariableDebtTokenX(reserveData.variableDebtTokenAddress);
+    }
 
-        //Spookyswap router
-        router = IUniswapV2Router02(0xF491e7B69E4244ad4002BC14e878a34207E38c29);
-        weth = router.WETH();
-
-        want.approve(address(pool), type(uint256).max);
-        geist.approve(address(router), type(uint256).max);
+    function updateProtocolParams() external onlyAuthorized {
+        _updateProtocolParams();
     }
 
     function initialize(
@@ -139,6 +157,22 @@ contract Strategy is BaseStrategy {
         return dToken.balanceOf(address(this));
     }
 
+    function getHealth() external view returns (uint256) {
+        (
+            ,
+            ,
+            ,
+            ,
+            /*uint256 totalCollateralETH*/
+            /*uint256 totalDebtETH*/
+            /*uint256 availableBorrowsETH*/
+            /*uint256 currentLiquidationThreshold*/
+            uint256 ltv,
+            uint256 healthFactor
+        ) = pool.getUserAccountData(address(this));
+        return healthFactor;
+    }
+
     function getMaxBorrowable() public view returns (uint256) {
         (
             ,
@@ -157,8 +191,6 @@ contract Strategy is BaseStrategy {
             // Amount = deposited * ltv - borrowed
             // Div MAX_BPS because because ltv / maxbps is the percent
             uint256 maxValue = balanceOfLend().mul(ltv).div(MAX_BPS).sub(balanceOfDebt());
-            //Reduce by 0.5%
-            maxValue = maxValue.mul(9950).div(MAX_BPS);
             // Don't borrow if it's dust, save gas
             if (maxValue < minRebalanceAmount) {
                 return 0;
@@ -195,7 +227,7 @@ contract Strategy is BaseStrategy {
         }
 
         uint256 diff = aBalance.sub(vBalance.mul(10000).div(currentLiquidationThreshold));
-        uint256 inWant = diff; // Take 97% just to be safe
+        uint256 inWant = diff.mul(97).div(100); // Take 97% just to be safe
         return inWant;
     }
 
@@ -447,6 +479,14 @@ contract Strategy is BaseStrategy {
         }
     }
 
+    function updateRebalanceAmt(uint256 _newRebal) external onlyStrategist {
+        minRebalanceAmount = _newRebal;
+    }
+
+    function updateMinHealth(uint256 _newHealth) external onlyStrategist {
+        minHealth = _newHealth;
+    }
+
     function _claimAndSwapRewards() internal {
         //Claim incentives from controller
         _incentivesController().claim(address(this), getTokensForRewards());
@@ -568,13 +608,17 @@ contract Strategy is BaseStrategy {
         (_amountFreed, ) = liquidatePosition(type(uint256).max);
     }
 
+    function fromETH(uint256 _amount, address asset) internal view returns (uint256) {
+        return _amount.mul(uint256(10)**uint256(IERC20Extended(asset).decimals())).div(oracle.getAssetPrice(asset));
+    }
+
     function _fromETH(uint256 _amount, address asset) internal view returns (uint256) {
         if (
             _amount == 0 || _amount == type(uint256).max || address(asset) == address(weth) // 1:1 change
         ) {
             return _amount;
         }
-        return AaveUtils.fromETH(_amount, asset);
+        return fromETH(_amount, asset);
     }
 
     function ethToWant(uint256 _amtInWei) public view virtual override returns (uint256) {
